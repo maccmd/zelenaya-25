@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Тополево, Зелёная 25</title>
+<style>
+  html,body{margin:0;height:100%;background:#17171c;overflow:hidden;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;color:#eee}
+  canvas{display:block}
+  #ui{position:fixed;left:16px;top:16px;display:flex;flex-direction:column;gap:8px;max-width:calc(100vw - 32px)}
+  #ui h1{margin:0;font-size:17px;font-weight:600;letter-spacing:.2px}
+  #ui p{margin:0;font-size:12px;opacity:.6}
+  #btns,#btns2{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  button{background:#2a2a33;color:#eee;border:1px solid #3c3c48;border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer}
+  button:hover{background:#353541}
+  button.on{background:#c9772e;border-color:#e0914a;color:#fff}
+  #stat{position:fixed;left:16px;bottom:12px;font-size:11px;opacity:.45}
+</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<div id="ui">
+  <h1 id="ttl">Тополево · Зелёная, 25</h1>
+  <p>Мышь: вращать · колесо: приблизить · правая кнопка: сдвинуть</p>
+  <div id="btns">
+    <button data-s="spring">Весна</button><button data-s="summer">Лето</button><button data-s="autumn">Осень</button><button data-s="winter">Зима</button>
+  </div>
+  <div id="btns2">
+    <button id="bEve">Вечер</button>
+    <button id="bRot" class="on">Вращение</button>
+    <button id="bLeaf" class="on">Листопад</button>
+  </div>
+</div>
+<div id="stat">строю сцену…</div>
+<script>window.addEventListener('error',e=>{document.getElementById('stat').textContent='Ошибка: '+e.message});</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+// ====================== воксельная сетка ======================
+// 1 воксель = 0,5 м. Оси: x — вдоль длинной стороны дома (на восток-северо-восток),
+// z — на юг-юго-восток, y — вверх. Участок 130 × 120 м повёрнут на ~30°, чтобы дом стоял ровно по сетке.
+const U0=64,V0=60,NX=260,NZ=240,NY=92,G=12;
+const X=u=>Math.round((u+U0)*2), Z=v=>Math.round((V0-v)*2);
+const vox=new Uint32Array(NX*NY*NZ);
+const I=(x,y,z)=>x+NX*(z+NZ*y);
+const inb=(x,y,z)=>x>=0&&x<NX&&y>=0&&y<NY&&z>=0&&z<NZ;
+function h3(x,y,z){let h=Math.imul(x|0,374761393)^Math.imul(y|0,668265263)^Math.imul(z|0,1274126177);h=Math.imul(h^(h>>>13),1103515245);h^=h>>>16;return(h>>>0)/4294967296;}
+function shade(c,f){const r=Math.min(255,((c>>16)&255)*f)|0,g=Math.min(255,((c>>8)&255)*f)|0,b=Math.min(255,(c&255)*f)|0;return(r<<16)|(g<<8)|b;}
+function mix(a,b,t){const r=((a>>16)&255)*(1-t)+((b>>16)&255)*t,g=((a>>8)&255)*(1-t)+((b>>8)&255)*t,bl=(a&255)*(1-t)+(b&255)*t;return(r<<16)|(g<<8)|(bl|0);}
+function put(x,y,z,c,j=0.06,fl=1){if(!inb(x,y,z))return;vox[I(x,y,z)]=((fl<<24)|shade(c,1+(h3(x,y,z)-.5)*2*j))>>>0;}
+const get=(x,y,z)=>inb(x,y,z)?vox[I(x,y,z)]:0;
+function putE(x,y,z,c,j,fl){if(inb(x,y,z)&&!vox[I(x,y,z)])put(x,y,z,c,j,fl);}
+function del(x,y,z){if(inb(x,y,z))vox[I(x,y,z)]=0;}
+function box(x1,x2,y1,y2,z1,z2,c,j,fl){for(let y=y1;y<y2;y++)for(let z=z1;z<z2;z++)for(let x=x1;x<x2;x++)put(x,y,z,c,j,fl);}
+function vn(x,z,s){const fx=x/s,fz=z/s,ix=Math.floor(fx),iz=Math.floor(fz),tx=fx-ix,tz=fz-iz,sx=tx*tx*(3-2*tx),sz=tz*tz*(3-2*tz);
+  const a=h3(ix,7,iz),b=h3(ix+1,7,iz),c=h3(ix,7,iz+1),d=h3(ix+1,7,iz+1);return a+(b-a)*sx+(c-a)*sz+(a-b-c+d)*sx*sz;}
+function topY(x,z){for(let y=NY-1;y>=0;y--)if(get(x,y,z))return y;return -1;}
+let seed=20261110;const rnd=()=>{seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+const pick=(p,x,y,z)=>p[Math.floor(h3(x*3+1,y*5+2,z*7+3)*p.length)];
+
+// ====================== времена года ======================
+const tp=a=>{a.tree=true;return a;};
+const SPR=[0x2F5D3A,0x2A5234,0x3A6B45],BLO=tp([0xF7C6D9,0xF9D9E6,0xF2A9C4,0xFFFFFF]),BARE=[0x5B4636,0x4A382B,0x6A5240],BAREP=tp([0x5B4636]);
+const LEAFA=[0xF2C230,0xE8A317,0xF6D55C,0xD9A520,0xE67E22,0xD9731A,0xF39C12,0xC96A1B,0xC0392B,0x8E5A1E];
+const SEAS={
+ spring:{id:'spring',name:'весна',Y:tp([0xA8D65C,0x93C94E,0xB9E070,0x86BF45]),O:BLO,R:tp([0x7CC254,0x6BB347,0x8FD066,0x5FA53E]),POP:tp([0x9CCB5A,0x8ABF4C,0xAEDB6C]),LAR:tp([0x8FCB6B,0x7DBD5C,0xA2D97E]),APP:BLO,
+   grassA:0x7FB34A,grassB:0xA3CF5E,dry:0x8A7A45,dryW:0.3,dots:[0xF4D03F,0xF4D03F,0xFFFFFF,0xF4D03F],dotP:0.035,tuft:0.006,puddle:0.72,
+   sun:[0xFFF0D8,3.0,-190,270,180],hemi:[0xD6E8FF,0x7A8A58,1.05],smoke:0.5,cloud:0xffffff,
+   part:{label:'Лепестки',cols:[0xF7C6D9,0xFFFFFF,0xF2A9C4],size:0.55,v:[1.2,2.6],drift:1.5,wind:1,n:260}},
+ summer:{id:'summer',name:'лето',Y:tp([0x4FA83D,0x5DB548,0x43963A,0x6BBF4F]),O:tp([0x3E8E3A,0x4A9C40,0x357F33,0x58A848]),R:tp([0x2F7D3A,0x3A8A3F,0x4C9A45]),POP:tp([0x5BA84A,0x4E9A40,0x6DB85A]),LAR:tp([0x4F9E5A,0x5CAB62,0x458F50]),APP:tp([0x4FA83D,0x5DB548,0x43963A,0xD9412F]),
+   grassA:0x4E9A3E,grassB:0x74B84C,dry:0x8FA046,dryW:0.25,dots:[0xFFFFFF,0xF4D03F,0xB07CD8,0xF29AC0],dotP:0.025,tuft:0.012,puddle:2,
+   sun:[0xFFF6E0,3.5,-140,330,150],hemi:[0xCFE4FF,0x6F8A4A,1.1],smoke:0,cloud:0xffffff,
+   part:{label:'Тополиный пух',cols:[0xFFFFFF,0xF4F4EE],size:0.5,v:[0.25,0.9],drift:4,wind:1.5,float:true,n:340}},
+ autumn:{id:'autumn',name:'осень',Y:tp([0xF2C230,0xE8A317,0xF6D55C,0xD9A520]),O:tp([0xE67E22,0xD9731A,0xF39C12,0xC96A1B]),R:tp([0xC0392B,0xA83220,0xD35400,0x8E2A1E]),POP:tp([0xD8B93A,0xC9A227,0xB7B040,0xE3C54A]),LAR:tp([0xE0A030,0xD98E1F,0xC97B1A,0xEDB84A]),APP:tp([0x9FA63A,0xB8B040,0xC0392B,0xA9B03C]),
+   grassA:0x748A3C,grassB:0xA69C40,dry:0x9A7A3C,dryW:0.8,dots:LEAFA,dotP:0.07,tuft:0.008,puddle:0.8,
+   sun:[0xFFD7A6,3.2,-210,250,190],hemi:[0xC9DBFF,0x7A6248,1.0],smoke:1,cloud:0xE4E2E6,
+   part:{label:'Листопад',cols:LEAFA,size:0.8,v:[2,5],drift:1.5,wind:0.5,n:420}},
+ winter:{id:'winter',name:'зима',Y:BAREP,O:BAREP,R:BAREP,POP:BAREP,LAR:BAREP,APP:BAREP,snow:true,bare:true,
+   grassA:0xF6F8FC,grassB:0xE4ECF5,dry:0xE4ECF5,dryW:0,dots:[0xFFFFFF],dotP:0,tuft:0,puddle:0.8,
+   sun:[0xFFE6CC,2.5,-240,140,230],hemi:[0xDDE8FF,0xC8D4E8,1.2],smoke:1.2,cloud:0xD8DEE8,
+   part:{label:'Снег',cols:[0xFFFFFF],size:0.5,v:[3,6],drift:2,wind:1.5,n:520}},
+};
+let SE=SEAS[new URLSearchParams(location.hash.slice(1)).get('s')]||SEAS.autumn,Y,O,R,POP,LAR,APP;
+const lamps=[],chimneys=[];
+function generate(){
+vox.fill(0);seed=20261110;lamps.length=0;chimneys.length=0;({Y,O,R,POP,LAR,APP}=SE);
+
+// ====================== земля ======================
+const inR=(u,v,u1,u2,v1,v2)=>u>=u1&&u<u2&&v>=v1&&v<v2;
+function terrain(u,v){
+  const zs=-10-(u-31)*0.095;                       // ось улицы Зелёной
+  if(u>=23.5&&u<30.5&&v<32) return 'road';         // проезд вдоль дома
+  if(u>=30.5&&Math.abs(v-zs)<=3) return 'road';    // Зелёная улица
+  if(u>=-34.5&&u<-28.5) return 'road';             // западный проезд
+  if(inR(u,v,19.5,46,20,32)) return 'yard';        // парковка
+  if(inR(u,v,30.5,33,-4,20)) return 'yard';
+  if(inR(u,v,-28.5,23.5,8.6,19)) return 'yard';    // двор перед подъездами
+  if(inR(u,v,-16.2,20.2,-13.3,8.6)) return 'concrete';
+  if(inR(u,v,-58,-34.5,4,34.5)) return 'dirt';
+  if(inR(u,v,27,38,34,60)) return 'tile';
+  if(inR(u,v,44,57,1,16)) return 'rubber';
+  if(inR(u,v,37,63,-3,20)) return 'sand';
+  if(inR(u,v,-27.5,-6,-58,-19.5)) return 'soil';
+  return 'grass';
+}
+for(let z=0;z<NZ;z++)for(let x=0;x<NX;x++){
+  const u=x/2-U0+.25,v=V0-z/2-.25,t=terrain(u,v);
+  const edge=Math.min(x,NX-1-x,z,NZ-1-z), ef=Math.min(1,edge/34), es=ef*ef*(3-2*ef);
+  const yb=Math.max(0,Math.round(G-4-(1.5+6*es+2.5*vn(x,z,9))));
+  for(let y=yb;y<G-3;y++){const band=Math.floor((y+3*vn(x+y*2,z,22))/2)%3;put(x,y,z,[0x8C8A93,0x77757F,0x9B99A2][band],0.05);}
+  put(x,G-3,z,0x5E412B,0.08);put(x,G-2,z,0x6B4A2F,0.08);
+  let c,j=0.07,pud=false;
+  if(t==='grass'){const n=vn(x,z,20),n2=vn(x+300,z+90,6);c=mix(mix(SE.grassA,SE.grassB,n),SE.dry,n2*n2*SE.dryW);
+    if(h3(x,1,z)<SE.dotP)c=pick(SE.dots,x,2,z);}
+  else if(t==='road'){c=mix(0x8C8172,0x7A7064,vn(x,z,8));pud=vn(x+40,z+40,7)>SE.puddle;}
+  else if(t==='yard'){c=mix(0x7E7B77,0x6E6C69,vn(x,z,10));pud=vn(x+90,z+10,6)>SE.puddle+0.03;}
+  else if(t==='dirt')c=mix(0x8B7355,0x7A664C,vn(x,z,9));
+  else if(t==='concrete')c=0xA9A59C;
+  else if(t==='tile'){c=((x>>1)+(z>>1))&1?0xB8B0A2:0xA59D90;j=0.03;}
+  else if(t==='rubber'){c=0xC8643C;j=0.04;}
+  else if(t==='sand')c=0xD9B77A;
+  else {c=(z%4<2)?0x5A4030:0x70553B;}
+  if(pud){c=SE.snow?0xBFD8EA:0x5F7A92;j=0.02;}
+  else if(SE.snow){const sn=mix(0xF6F8FC,0xDCE6F2,vn(x+70,z+20,14));
+    if(t==='road'||t==='yard')c=mix(c,sn,0.5+0.3*vn(x,z,5));else if(t==='tile'||t==='concrete'||t==='rubber')c=mix(c,sn,0.75);else c=sn;j=0.025;}
+  put(x,G-1,z,c,j);
+  if(t==='soil'&&z%4<2){put(x,G,z,SE.snow?0xF2F5FA:0x5A4030,SE.snow?0.02:0.1);const r=h3(x,9,z);
+    if(SE.id==='autumn'){if(r<0.012)put(x,G+1,z,0xE67E22,0.08);else if(r<0.035)put(x,G+1,z,0x7FAF6A,0.1);else if(r<0.05){put(x,G+1,z,0xB59A5A,0.1);put(x,G+2,z,0xC9AE66,0.1);}}
+    else if(SE.id==='summer'){if(r<0.55)put(x,G+1,z,pick([0x4E9A3E,0x5FAE48,0x3F8A3A],x,4,z),0.1);
+      if(r<0.03&&z%12<2){put(x,G+2,z,0x4E9A3E,0.05);put(x,G+3,z,0x4E9A3E,0.05);put(x,G+4,z,0xF4C430,0.05);}else if(r<0.1)put(x,G+2,z,0x4E9A3E,0.1);else if(r>0.97)put(x,G+2,z,0xD9412F,0.08);}
+    else if(SE.id==='spring'){if(r<0.18)put(x,G+1,z,0x86C452,0.1);}}
+  if(t==='grass'){const r=h3(x,3,z);
+    if(SE.snow){const d=vn(x+11,z+37,7);if(d>0.7)put(x,G,z,0xF6F8FC,0.02);if(d>0.84)put(x,G+1,z,0xF6F8FC,0.02);}
+    else if(r<SE.tuft)put(x,G,z,mix(SE.grassA,SE.grassB,h3(x,4,z)),0.1);else if(r<SE.tuft+SE.dotP*0.07)put(x,G,z,pick(SE.dots,x,5,z),0.1);}
+}
+
+// ====================== детали ======================
+function litter(cx,cz,r,pal){if(SE.id==='winter'||SE.id==='summer'||(SE.id==='spring'&&pal!==BLO))return;for(let dz=-r;dz<=r;dz++)for(let dx=-r;dx<=r;dx++){const d=Math.hypot(dx,dz)/r;if(d>1)continue;const x=cx+dx,z=cz+dz;
+  if(!inb(x,G,z)||get(x,G,z))continue;const hh=h3(x,11,z);if(hh<0.5*(1-d)+0.05)put(x,G-1,z,pick(pal,x,6,z),0.1);if(hh>0.975)put(x,G,z,pick(pal,x,8,z),0.1);}}
+function blob(cx,cy,cz,rx,ry,rz,pal,holes=0.15){for(let dy=-Math.ceil(ry);dy<=Math.ceil(ry);dy++)for(let dz=-Math.ceil(rz);dz<=Math.ceil(rz);dz++)for(let dx=-Math.ceil(rx);dx<=Math.ceil(rx);dx++){
+  const x=cx+dx,y=cy+dy,z=cz+dz,d=(dx/rx)**2+(dy/ry)**2+(dz/rz)**2;if(d>1+(h3(x,y,z)-.5)*.5)continue;if(d>.45&&h3(x+9,y,z+4)<holes)continue;if(SE.bare&&pal.tree){if(h3(x+5,y+3,z+1)<0.8)continue;putE(x,y,z,pick(BARE,x,y,z),0.1);continue;}putE(x,y,z,pick(pal,x,y,z),0.1);}}
+function trunk(x,z,h,c,t=1){for(let y=G;y<G+h;y++)for(let a=0;a<t;a++)for(let b=0;b<t;b++)put(x+a,y,z+b,c,0.1);}
+function birch(x,z,h){for(let y=G;y<G+h;y++)put(x,y,z,h3(x,y,z)<0.22?0x3A3632:0xEDEAE0,0.04);
+  for(let i=0;i<4;i++)blob(x+Math.round(rnd()*4-2),G+h-2+Math.round(rnd()*4),z+Math.round(rnd()*4-2),3.1+rnd()*1.3,2.7+rnd(),3.1+rnd()*1.3,Y,0.3);litter(x,z,7,Y);}
+function maple(x,z,h,pal,r=5){r*=1.2;trunk(x,z,h,0x5B3E2B,r>4.5?2:1);blob(x,G+h+2,z,r,r*.8,r,pal,0.18);
+  for(let i=0;i<3;i++)blob(x+Math.round(rnd()*6-3),G+h+Math.round(rnd()*3),z+Math.round(rnd()*6-3),r*.6,r*.5,r*.6,pal,0.2);litter(x,z,Math.round(r*1.8),pal);}
+function poplar(x,z,h){trunk(x,z,Math.round(h*.35),0x6E5B48);blob(x,G+Math.round(h*.58),z,2.4,h*.46,2.4,POP,0.2);litter(x,z,5,POP);}
+function conifer(x,z,h,pal,rb=3.6){const bare=SE.bare&&pal!==SPR;trunk(x,z,h-2,0x5A4332);for(let y=G+3;y<G+h;y++){const k=(y-G-3)/(h-3);let r=(1-k)*rb+.6;if((y-G)%3===0)r*=.6;
+  const ri=Math.ceil(r);for(let dz=-ri;dz<=ri;dz++)for(let dx=-ri;dx<=ri;dx++)if(dx*dx+dz*dz<=r*r&&h3(x+dx,y,z+dz)>(bare?0.78:0.12))putE(x+dx,y,z+dz,pick(bare?BARE:pal,x+dx,y,z+dz),0.1);}
+  put(x,G+h,z,bare?BARE[0]:pal[0],0.1);if(pal===LAR)litter(x,z,5,LAR);}
+function bush(x,z,pal,r=1.7){blob(x,G+1,z,r,r*.9,r,pal,0.15);}
+function fence(x1,z1,x2,z2,h,c){const n=Math.max(Math.abs(x2-x1),Math.abs(z2-z1)),sx=Math.sign(x2-x1),sz=Math.sign(z2-z1);
+  for(let i=0;i<=n;i++){const x=x1+sx*i,z=z1+sz*i;if(get(x,G,z))continue;const post=i%6===0;for(let y=0;y<h+(post?1:0);y++)put(x,G+y,z,post?shade(c,.75):c,0.08);}}
+function car(x,z,ax,col){for(let l=0;l<9;l++)for(let w=0;w<4;w++){const px=ax==='x'?x+l:x+w,pz=ax==='x'?z+w:z+l,side=w===0||w===3;
+  put(px,G,pz,side&&(l===1||l===2||l===6||l===7)?0x1C1C1E:shade(col,.8),0.04);
+  let c=col;if(l===0&&side)c=0xFFF2B0;if(l===8&&side)c=0xB02020;put(px,G+1,pz,c,0.03);
+  if(l>=2&&l<=6)put(px,G+2,pz,(side||l===2||l===6)?0x263340:col,0.03);}}
+function lamp(x,z,dx=1,dz=0){for(let y=G;y<G+12;y++)put(x,y,z,0x3E4248,0.03);put(x+dx,G+11,z+dz,0x3E4248,0.03);put(x+2*dx,G+11,z+2*dz,0x3E4248,0.03);put(x+2*dx,G+10,z+2*dz,0xFFE2A0,0.02,2);lamps.push([x+2*dx,G+10,z+2*dz]);}
+function bench(x,z,ax){for(let i=0;i<3;i++){const px=ax==='x'?x+i:x,pz=ax==='x'?z:z+i;put(px,G,pz,i===1?0x7A5A3C:0x3E3E42,0.05);if(i!==1)put(px,G,pz,0x8A6543,0.05);}}
+function person(x,z,shirt,tall=3){put(x,G,z,0x2E3440,0.05);for(let y=1;y<tall;y++)put(x,G+y,z,shirt,0.05);put(x,G+tall,z,0xE8B894,0.03);}
+
+// окна
+function win(x,y,z,lit){if(lit)put(x,y,z,0xFFD98A,0.06,2);else put(x,y,z,0x3B4C63,0.1);}
+// крыша по карте высот из нескольких скатных частей
+function roof(parts,yB,color,o={}){const ov=o.ov??1,sl=o.slope||2;let a=1e9,b=-1e9,c=1e9,d=-1e9;
+  for(const p of parts){a=Math.min(a,p.x1-ov);b=Math.max(b,p.x2+ov);c=Math.min(c,p.z1-ov);d=Math.max(d,p.z2+ov);}
+  for(let z=c;z<d;z++)for(let x=a;x<b;x++){let h=0,sm=x;for(const p of parts){const a1=p.x1-ov,a2=p.x2+ov-1,b1=p.z1-ov,b2=p.z2+ov-1;if(x<a1||x>a2||z<b1||z>b2)continue;
+      const dx=Math.min(x-a1,a2-x),dz=Math.min(z-b1,b2-z),dd=p.ridge==='x'?dz:p.ridge==='z'?dx:Math.min(dx,dz),hh=Math.floor(dd/sl)+1;
+      if(hh>h){h=hh;sm=(dd===dx&&p.ridge!=='x')?z:x;}}
+    for(let k=0;k<h;k++)put(x,yB+k,z,k===h-1?shade(color,sm%3===0?0.86:1):(o.fill||shade(color,0.8)),0.035);}}
+function building(x1,x2,z1,z2,floors,wall,o={}){const fh=6,pl=o.pl??1,yT=G+pl+floors*fh,lit=o.lit??0.35,per=o.per||6;
+  for(let y=G;y<yT;y++){const c=y<G+pl?0x77736C:((y-G-pl)%fh===0&&y>G+pl?shade(wall,.9):wall);for(let z=z1;z<z2;z++)for(let x=x1;x<x2;x++)put(x,y,z,c,0.04);}
+  for(let f=0;f<floors;f++){const y0=G+pl+f*fh+2;
+    for(let x=x1+1;x<x2-1;x++){const i=x-x1,k=Math.floor(i/per);if(i%per>=2&&i%per<5)for(let dy=0;dy<3;dy++){win(x,y0+dy,z1,h3(k,f,z1*7+1)<lit);win(x,y0+dy,z2-1,h3(k,f,z2*7+3)<lit);}}
+    for(let z=z1+1;z<z2-1;z++){const i=z-z1,k=Math.floor(i/per);if(i%per>=2&&i%per<5)for(let dy=0;dy<3;dy++){win(x1,y0+dy,z,h3(k,f,x1*7+5)<lit);win(x2-1,y0+dy,z,h3(k,f,x2*7+9)<lit);}}}
+  if(o.door){const [dx,dz]=o.door;box(dx,dx+2,G,G+4,dz,dz+1,0x4A3526,0.05);}
+  if(o.roof==='flat'){box(x1,x2,yT,yT+1,z1,z2,o.rc||0x5A5A5E,0.06);}
+  else roof([{x1,x2,z1,z2,ridge:o.roof}],yT,o.rc,{fill:o.roof?wall:undefined});
+  return yT;}
+function chimney(x,z){const t=topY(x,z);box(x,x+2,t+1,t+4,z,z+2,0x8A4B3A,0.1);chimneys.push([x+1,t+4,z+1]);}
+
+// ====================== соседние здания ======================
+building(6,123,20,49,2,0xD5D2C8,{roof:'x',rc:0x9AA0A6,door:[60,48],lit:0.25});            // Школьная, 10
+building(0,52,114,150,3,0xE6D9B8,{rc:0x2F6152,lit:0.4});                                   // корпус с зелёной крышей
+building(0,8,0,114,3,0xE6D9B8,{roof:'z',rc:0x2F6152,lit:0.4});
+building(163,181,0,52,1,0xC9C3B5,{roof:'z',rc:0x6F8FA8,pl:2,door:[170,51],lit:0.2});       // длинное здание у площади
+building(205,221,0,45,1,0xBEB9AE,{roof:'flat',pl:2,lit:0.2});
+building(244,260,0,62,3,0xE9E0CF,{roof:'z',rc:0xB8372E,lit:0.45});                         // Пионерская, 2
+building(119,138,62,78,1,0x9A9892,{roof:'flat',rc:0x55565B,pl:0,per:50});                  // гаражи во дворе
+for(let i=0;i<3;i++)box(121+i*6,125+i*6,G,G+4,77,78,0x5E6A73,0.05);
+// частные дома
+building(142,164,182,210,1,0xB98A5A,{roof:'z',rc:0x2F7FBF,lit:0.6});chimney(150,196);        // дом с синей крышей
+building(144,162,210,226,1,0x8B8378,{roof:'z',rc:0x7C8088,per:50});
+building(118,130,164,176,1,0x86705A,{roof:'x',rc:0x8A5A44,pl:0,per:50,slope:3});
+building(132,144,165,176,1,0x8F8A80,{roof:'x',rc:0x7D8187,pl:0,per:50});
+building(146,156,166,176,1,0x7A6A58,{roof:'x',rc:0x6A7A8A,pl:0,per:50});
+building(216,230,171,188,1,0xD9C58A,{rc:0x7F858C,lit:0.6});chimney(222,178);
+building(218,244,202,226,1,0xE8E4DA,{rc:0x8FC3E0,lit:0.6});chimney(230,212);
+
+// ====================== дом 25 ======================
+// По фото: красный кирпич, светлые пояса по этажам, лоджии с бежевым ограждением между кирпичными простенками, зелёная вальмовая крыша.
+const HX1=98,HX2=166,HZ1=105,HZ2=145,NA=118,NB=145,NZn=114,HT=G+38;
+const BR=0xB4552F,BRD=0x9A4528,BAND=0xD9D0BE,SID=0xDCC28C,WH=0xEDEBE5,GL=0x7F97AB,ROOFC=0x2C7F63;
+const inHouse=(x,z)=>x>=HX1&&x<HX2&&z>=HZ1&&z<HZ2&&!(x>=NA&&x<NB&&z<NZn);
+const hcol=(x,y,z,c=BR)=>y<G+2?0x77736C:(y===HT-1||((y-G-2)%6===0&&y>G+2))?BAND:shade(c,((x+z+(y&1)*2)%4===0)?0.88:1);
+for(let z=HZ1;z<HZ2;z++)for(let x=HX1;x<HX2;x++)if(inHouse(x,z))for(let y=G;y<HT;y++)put(x,y,z,hcol(x,y,z),0.06);
+// лоджия: ограждение из сайдинга, выше остекление либо открытый проём с окном в глубине
+function loggia(x,y0,zf,dz,edge,white,f,id){const glazed=white||h3(id,f,771)<0.6,lit=h3(id,f,772)<0.4,pc=white?WH:SID;
+  put(x,y0+1,zf,pc,0.04);put(x,y0+2,zf,shade(pc,x%2?1:0.93),0.04);
+  for(let dy=3;dy<6;dy++){
+    if(glazed){if(edge||x%3===0)put(x,y0+dy,zf,WH,0.03);else if(lit)put(x,y0+dy,zf,0xFFD98A,0.06,2);else put(x,y0+dy,zf,GL,0.07);}
+    else{del(x,y0+dy,zf);const zi=zf-dz;if(edge||dy===5)put(x,y0+dy,zi,BRD,0.07);else if(lit)put(x,y0+dy,zi,0xFFD98A,0.06,2);else put(x,y0+dy,zi,0x3B4C63,0.1);}}}
+for(let f=0;f<6;f++){const y0=G+2+6*f;
+  // южный фасад: глухая кирпичная секция слева и четыре секции лоджий
+  for(let x=HX1;x<HX2;x++){const i=x-HX1;
+    if(i<9){if(i===4||i===5)for(let dy=2;dy<5;dy++)win(x,y0+dy,HZ2-1,h3(9,f,101)<0.4);continue;}
+    const j=(i-9)%15,bay=Math.floor((i-9)/15);if(j<2)continue;loggia(x,y0,HZ2-1,1,j===2||j===14,bay===3,f,10+bay);}
+  // торцы: по два небольших окна на этаж и кондиционеры
+  for(const j of [11,12,26,27]){const z=HZ1+j,k=j<20?0:1;for(let dy=2;dy<5;dy++){win(HX1,y0+dy,z,h3(k,f,404)<0.4);win(HX2-1,y0+dy,z,h3(k,f,505)<0.4);}}
+  if(h3(f,1,606)<0.5)put(HX1-1,y0+1,HZ1+14,0xE6E6E6,0.03);if(h3(f,2,606)<0.5)put(HX2,y0+1,HZ1+29,0xE6E6E6,0.03);
+  // дворовая сторона: угловые лоджии на выступах, окна, лоджии между подъездами
+  for(let x=HX1;x<HX1+8;x++)loggia(x,y0,HZ1,-1,x===HX1||x===HX1+7,false,f,50);
+  for(let x=HX2-8;x<HX2;x++)loggia(x,y0,HZ1,-1,x===HX2-8||x===HX2-1,false,f,51);
+  for(const [a,z] of [[110,HZ1],[150,HZ1],[119,NZn],[141,NZn]])for(let x=a;x<a+3;x++)for(let dy=2;dy<5;dy++)win(x,y0+dy,z,h3(a,f,909)<0.4);
+  for(let x=128;x<136;x++)loggia(x,y0,NZn,-1,x===128||x===135,false,f,60);
+  for(let z=108;z<=110;z++)for(let dy=2;dy<5;dy++){win(NA-1,y0+dy,z,h3(1,f,707)<0.4);win(NB,y0+dy,z,h3(2,f,808)<0.4);}
+}
+// кирпичные простенки между лоджиями выступают на полкирпича
+for(let b=0;b<4;b++)for(let k=0;k<2;k++){const x=HX1+9+b*15+k;for(let y=G;y<HT;y++)put(x,y,HZ2,hcol(x,y,HZ2,BRD),0.06);}
+// подъезды: тёмные кирпичные лестничные башни, двери, козырьки
+for(const dx of [123,136]){for(let y=G+2;y<HT-1;y++)for(let x=dx;x<dx+5;x++)put(x,y,NZn,hcol(x,y,NZn,BRD),0.06);
+  box(dx+1,dx+4,G,G+5,NZn,NZn+1,0x4A3526,0.05);put(dx+2,G+3,NZn,0x8FA6B8,0.03);
+  box(dx-1,dx+6,G+5,G+6,111,114,0x8E8C88,0.04);for(let y=G;y<G+5;y++){put(dx-1,y,111,0x3E4248,0.03);put(dx+5,y,111,0x3E4248,0.03);}
+  box(dx,dx+5,G,G+1,112,114,0xB5B1A8,0.04);
+  for(let f=0;f<6;f++){const ys=G+2+6*f+5;if(ys+2<HT-1)for(let x=dx+1;x<dx+4;x++)for(let dy=0;dy<3;dy++)win(x,ys+dy,NZn,h3(dx,f,111)<0.8);}}
+roof([{x1:HX1,x2:HX2,z1:NZn,z2:HZ2},{x1:HX1,x2:NA,z1:HZ1,z2:130},{x1:NB,x2:HX2,z1:HZ1,z2:130}],HT,ROOFC,{slope:3});
+for(const [x,z] of [[112,128],[150,128],[131,134]]){const t=topY(x,z);box(x,x+3,t+1,t+5,z,z+2,0xA04A30,0.09);box(x,x+3,t+5,t+6,z,z+2,0x4A4A4E,0.04);}
+{const t=topY(140,129);for(let y=1;y<6;y++)put(140,t+y,129,0x55585E,0.02);put(139,t+4,129,0x55585E,0.02);put(141,t+4,129,0x55585E,0.02);}
+for(let y=G;y<HT;y++){put(HX1-1,y,HZ2-1,0x4B4F55,0.03);put(HX2,y,HZ2-1,0x4B4F55,0.03);}
+// клумба и лавочки у подъездов
+box(129,135,G,G+1,107,110,0x4E3A2A,0.1);for(let x=129;x<135;x++)for(let z=107;z<110;z++)if(!SE.snow&&h3(x,31,z)<0.75)put(x,G+1,z,pick([0x9B59B6,0xE67E22,0xF1C40F,0xC0392B,0x6F9A45],x,32,z),0.08);
+bench(120,111,'x');bench(141,111,'x');person(127,110,0xB0413E);person(128,111,0x3F6FA8);person(139,109,0xD9A441,2);
+
+// ====================== двор, площадка, участки ======================
+[[184,62,'z',0xC8C8CC],[190,62,'z',0x2B2D33],[196,62,'z',0x7A1F1F],[202,62,'z',0xE4E4E6],[212,64,'x',0x3E5C8A],[189,96,'z',0xECECEC],[189,116,'z',0x1F2A36],[168,84,'x',0x5F6B5A],[84,86,'x',0xB9B9BE],[62,60,'z',0x2E4A7A]]
+  .forEach(([x,z,a,c])=>car(x,z,a,c));
+lamp(173,96,-1,0);lamp(173,150,-1,0);lamp(112,101,0,1);lamp(150,101,0,1);lamp(200,78,0,1);lamp(70,128,1,0);lamp(192,160,0,-1);
+for(let i=0;i<3;i++)box(160+i*3,162+i*3,G,G+3,80,82,[0x3F7A4F,0x3F7A4F,0x3A5F8A][i],0.05); // мусорные баки
+// детская площадка
+fence(202,80,254,80,2,0x4C9A6A);fence(254,80,254,126,2,0x4C9A6A);fence(202,126,254,126,2,0x4C9A6A);fence(202,80,202,98,2,0x4C9A6A);fence(202,106,202,126,2,0x4C9A6A);
+{const px=226,pz=98;for(const [a,b] of [[0,0],[5,0],[0,5],[5,5]])for(let y=G;y<G+9;y++)put(px+a,y,pz+b,0xC0392B,0.04);
+  box(px,px+6,G+4,G+5,pz,pz+6,0xF1C40F,0.04);for(let k=0;k<4;k++)box(px-1+k,px+7-k,G+9+k,G+10+k,pz-1+k,pz+7-k,0x2E86C1,0.05);
+  for(let k=0;k<8;k++){put(px+2,G+4-Math.floor(k/2),pz+6+k,0xF39C12,0.04);put(px+3,G+4-Math.floor(k/2),pz+6+k,0xF39C12,0.04);}
+  for(let k=0;k<4;k++)put(px-1-k,G+3-k,pz+2,0x8E5A1E,0.05);
+  // качели
+  const sx=212,sz=92;for(let y=G;y<G+7;y++){put(sx,y,sz,0x2E86C1,0.04);put(sx+9,y,sz,0x2E86C1,0.04);}for(let x=sx;x<sx+10;x++)put(x,G+7,sz,0x2E86C1,0.04);
+  for(const x of [sx+3,sx+6]){for(let y=G+2;y<G+7;y++)put(x,y,sz,0x55585E,0.02);put(x,G+1,sz,0xE74C3C,0.04);}
+  // песочница, карусель
+  for(let x=240;x<247;x++)for(let z=110;z<117;z++)put(x,G,z,(x===240||x===246||z===110||z===116)?0x8E5A1E:0xE6C88A,0.06);
+  for(let a=0;a<8;a++)put(Math.round(214+2.5*Math.cos(a*Math.PI/4)),G+1,Math.round(114+2.5*Math.sin(a*Math.PI/4)),[0xE74C3C,0xF1C40F,0x2E86C1,0x27AE60][a%4],0.04);put(214,G,114,0x55585E);put(214,G+1,114,0x55585E);put(214,G+2,114,0x55585E);
+  bench(206,84,'x');bench(246,84,'x');person(233,112,0xE74C3C,2);person(236,104,0x27AE60,2);person(208,85,0x7D5BA6);}
+// беседка и синий купол во дворе
+{const gx=103,gz=68;for(const [a,b] of [[0,0],[6,0],[0,6],[6,6]])for(let y=G;y<G+5;y++)put(gx+a,y,gz+b,0x8A6B48,0.05);for(let k=0;k<4;k++)box(gx-1+k,gx+8-k,G+5+k,G+6+k,gz-1+k,gz+8-k,0xD8C39A,0.05);bench(gx+2,gz+3,'x');
+  blob(79,G,72,5,4.2,5,[0x4F86C6,0x5C93D1,0x3F74B3],0);for(let y=G;y<G+3;y++){del(79,y,77);del(80,y,77);del(79,y,76);del(80,y,76);}}
+// заборы участков
+fence(73,159,173,159,3,0x7A5A3C);fence(73,159,73,236,3,0x7A5A3C);fence(73,236,173,236,3,0x7A5A3C);fence(173,159,173,188,3,0x7A5A3C);fence(173,196,173,236,3,0x7A5A3C);fence(116,177,116,236,3,0x7A5A3C);
+fence(195,157,248,157,3,0x3F6B55);fence(195,157,195,172,3,0x3F6B55);fence(195,180,195,196,3,0x3F6B55);fence(248,157,248,196,3,0x3F6B55);fence(195,196,252,196,3,0x8C8F94);fence(195,196,195,210,3,0x8C8F94);fence(195,218,195,236,3,0x8C8F94);fence(195,236,252,236,3,0x8C8F94);fence(252,196,252,236,3,0x8C8F94);
+// огород: теплица, стог, пугало, бочка, поленница
+{for(let x=78;x<93;x++)for(let z=166;z<176;z++){const e=x===78||x===92||z===166||z===175;if(e)for(let y=G;y<G+4;y++)put(x,y,z,((x-78)%4===0||y===G+3)?0xF2F2EE:0xCFE3E8,0.03);}
+  roof([{x1:78,x2:93,z1:166,z2:176,ridge:'x'}],G+4,0xD6E8EC,{ov:0,fill:0xCFE3E8});
+  blob(106,G+2,226,3.4,3.6,3.4,[0xD9B55A,0xCFA94C,0xE2C06A],0);
+  for(let y=G;y<G+6;y++)put(98,y,200,0x7A5A3C,0.05);for(let x=96;x<=100;x++)put(x,G+4,200,0xB04A3A,0.05);put(98,G+6,200,0xD9B55A);put(98,G+7,200,0x5B3E2B);put(97,G+7,200,0x5B3E2B);put(99,G+7,200,0x5B3E2B);
+  box(112,114,G,G+3,170,172,0x3A6EA5,0.05);for(let x=158;x<166;x++)for(let y=G;y<G+3;y++)put(x,y,178,(x+y)%2?0xC9A26B:0xA9804E,0.08);
+  box(168,170,G,G+2,205,208,0x7A5A3C,0.06);put(170,G,206,0x3A2E26);put(171,G,206,0xD8CDB4);put(171,G+1,206,0xD8CDB4);put(172,G+1,206,0xD8CDB4);}
+
+// ====================== деревья ======================
+const T=[
+ [21.3,-6,'b',15],[21.5,-12,'m',7,R,4],[-12,-16.5,'b',14],[-4,-16.8,'m',5,R,2.6],[4,-16.5,'b',16],[12,-16.8,'m',5,O,2.8],[17.5,-16.5,'b',13],
+ [9,57,'m',8,O,5.5],[9,31,'b',15],[13,26,'m',7,R,4.5],[-20,31,'b',16],[-15,27,'m',7,O,4.5],[-24,13,'l',16],
+ [-40,31,'p',26],[-48,31.5,'p',24],[-52,18,'m',8,R,5.5],[-56,8,'b',15],[-44,8,'l',17],
+ [-36.5,-20,'p',27],[-36.5,-28,'p',24],[-36.5,-36,'p',28],[-36.5,-44,'p',25],[-36.5,-52,'p',27],
+ [-47,-28,'m',8,O,5.5],[-54,-38,'l',18],[-60,-48,'s',17],[-45,-50,'b',15],[-58,-22,'m',7,Y,5],[-50,-57,'m',6,R,4],
+ [33.8,2,'m',7,R,4.5],[33.8,13,'b',14],[64.5,18,'m',8,O,5],[64.5,7,'b',16],[64.5,-2,'l',17],[50,23,'m',7,Y,4.5],
+ [58,26,'s',18],[52,34,'b',15],[49,45,'m',8,R,5.5],[54,52,'l',19],[50,58,'b',14],[56,40,'p',25],[41,33,'m',6,O,3.5],
+ [36.5,-22,'m',5,APP,3.2],[55,-22,'b',14],[62,-30,'m',7,O,4.5],[38,-46,'l',16],[60,-56,'s',16],[36,-55,'b',13],[63,-45,'m',7,R,4.5],
+ [0,-38,'m',5,APP,3.4],[-1,-50,'m',6,O,4],[20,-26,'b',13],[19.5,-56.5,'s',15],[-20,-56,'m',5,APP,3],
+ [-62,56,'l',17],[-62,-58,'b',14],[62,-7,'m',6,Y,3.5],[14,58,'s',16],[-10,55,'m',6,R,3.5],[40,10,'b',13],[60,2,'m',6,R,3.8],
+];
+for(const t of T){const x=X(t[0]),z=Z(t[1]);if(get(x,G,z)&&t[2]!=='b')continue;
+  if(t[2]==='b')birch(x,z,t[3]);else if(t[2]==='m')maple(x,z,t[3],t[4],t[5]);else if(t[2]==='p')poplar(x,z,t[3]);else if(t[2]==='l')conifer(x,z,t[3],LAR);else conifer(x,z,t[3],SPR,4);}
+[[34,-5.5,R],[38,-5.5,Y],[42,-5.8,O],[48,-6.2,R],[54,-6.5,Y],[-18,22,O],[-8,19.8,R],[22,-18,Y],[-25,-17,R],[-30,36,Y],[30,56,O],[36,36,R],[30,36,Y]]
+  .forEach(([u,v,p])=>{const x=X(u),z=Z(v);if(!get(x,G,z))bush(x,z,p);});
+
+// ====================== сезонные детали ======================
+if(SE.id==='winter'){
+  const ex=X(32.5),ez=Z(46);conifer(ex,ez,26,SPR,5.5);                       // ёлка с гирляндой на площади
+  for(let y=G+4;y<G+26;y++)for(let a=0;a<6;a++){const k=(y-G-3)/23,r=(1-k)*5.5+0.9,an=y*0.9+a*1.05,x=Math.round(ex+r*Math.cos(an)),z=Math.round(ez+r*Math.sin(an));
+    if(h3(x,y,z)<0.6)put(x,y,z,[0xFF4040,0xFFD23F,0x4FA8FF,0x5CFF7A,0xFF7AD9][(y+a)%5],0.03,2);}
+  put(ex,G+27,ez,0xFFE066,0.02,2);
+  const sx=220,sz=108,W=[0xF6F8FC];blob(sx,G+1,sz,2.3,2.1,2.3,W,0);blob(sx,G+4,sz,1.7,1.6,1.7,W,0);put(sx,G+6,sz,0xF6F8FC,0.02);put(sx,G+7,sz,0xF6F8FC,0.02);put(sx,G+7,sz+1,0xE67E22,0.03);put(sx,G+8,sz,0x3A3A40,0.03); // снеговик
+  for(let z=0;z<NZ;z++)for(let x=0;x<NX;x++){const y=topY(x,z);if(y<G||y>=NY-1)continue;if(vox[I(x,y,z)]>>>24===2)continue;put(x,y+1,z,0xF6F8FC,0.025);}                 // снежные шапки
+}
+}
+generate();
+
+// ====================== сборка меша ======================
+const lut=new Float32Array(256);for(let i=0;i<256;i++){const c=i/255;lut[i]=c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4);}
+const FC=[[[1,0,0],[1,1,0],[1,1,1],[1,0,1]],[[0,0,1],[0,1,1],[0,1,0],[0,0,0]],[[0,1,1],[1,1,1],[1,1,0],[0,1,0]],[[0,0,0],[1,0,0],[1,0,1],[0,0,1]],[[1,0,1],[1,1,1],[0,1,1],[0,0,1]],[[0,0,0],[0,1,0],[1,1,0],[1,0,0]]];
+const DR=[[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]],AOV=[0.5,0.68,0.85,1];
+const solid=(x,y,z)=>inb(x,y,z)&&vox[I(x,y,z)]!==0?1:0;
+function meshAll(){
+const bufs=[null,{p:[],n:[],c:[],i:[]},{p:[],n:[],c:[],i:[]}];
+let nvox=0;const ao=[0,0,0,0];
+for(let y=0;y<NY;y++)for(let z=0;z<NZ;z++)for(let x=0;x<NX;x++){const v=vox[I(x,y,z)];if(!v)continue;nvox++;
+  const B=bufs[v>>>24],r=lut[(v>>16)&255],g=lut[(v>>8)&255],b=lut[v&255];
+  for(let d=0;d<6;d++){const D=DR[d];if(solid(x+D[0],y+D[1],z+D[2]))continue;
+    const ax=D[0]?0:D[1]?1:2,t1=(ax+1)%3,t2=(ax+2)%3,base=[x+D[0],y+D[1],z+D[2]],vi=B.p.length/3;
+    for(let k=0;k<4;k++){const c=FC[d][k],s1=c[t1]*2-1,s2=c[t2]*2-1,a=[...base],bb=[...base],cc=[...base];a[t1]+=s1;bb[t2]+=s2;cc[t1]+=s1;cc[t2]+=s2;
+      const o1=solid(a[0],a[1],a[2]),o2=solid(bb[0],bb[1],bb[2]),o3=solid(cc[0],cc[1],cc[2]);ao[k]=(o1&&o2)?0:3-(o1+o2+o3);
+      const f=AOV[ao[k]];B.p.push(x+c[0]-NX/2,y+c[1],z+c[2]-NZ/2);B.n.push(D[0],D[1],D[2]);B.c.push(r*f,g*f,b*f);}
+    if(ao[0]+ao[2]>=ao[1]+ao[3])B.i.push(vi,vi+1,vi+2,vi,vi+2,vi+3);else B.i.push(vi+1,vi+2,vi+3,vi+1,vi+3,vi);}}
+return {bufs,nvox};}
+function geo(B){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(B.p,3));g.setAttribute('normal',new THREE.Float32BufferAttribute(B.n,3));g.setAttribute('color',new THREE.Float32BufferAttribute(B.c,3));g.setIndex(new THREE.BufferAttribute(new Uint32Array(B.i),1));return g;}
+
+// ====================== сцена ======================
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;document.body.appendChild(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x17171c);
+const camera=new THREE.PerspectiveCamera(30,innerWidth/innerHeight,1,3000);
+const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(0,G+4,4);controls.enableDamping=true;controls.maxPolarAngle=Math.PI*0.49;controls.minDistance=60;controls.maxDistance=900;controls.autoRotate=true;controls.autoRotateSpeed=0.35;
+const HP=new URLSearchParams(location.hash.slice(1)),AZ=(parseFloat(HP.get('az'))||37)*Math.PI/180,EL=(parseFloat(HP.get('el'))||30)*Math.PI/180;
+function fit(){const a=innerWidth/innerHeight,d=(a>1.5?460:690/a)*(parseFloat(HP.get('zoom'))||1);camera.position.set(Math.sin(AZ)*Math.cos(EL)*d,Math.sin(EL)*d,Math.cos(AZ)*Math.cos(EL)*d).add(controls.target);}fit();
+
+const main=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.92,metalness:0}));main.castShadow=main.receiveShadow=true;scene.add(main);
+const litMat=new THREE.MeshBasicMaterial({vertexColors:true});
+const lit=new THREE.Mesh(new THREE.BufferGeometry(),litMat);lit.castShadow=lit.receiveShadow=true;scene.add(lit);
+const floor=new THREE.Mesh(new THREE.CircleGeometry(900,64),new THREE.ShadowMaterial({opacity:0.42}));floor.rotation.x=-Math.PI/2;floor.position.y=-18;floor.receiveShadow=true;scene.add(floor);
+
+const hemi=new THREE.HemisphereLight(0xC9DBFF,0x7A6248,1.0);scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xFFD7A6,3.2);sun.castShadow=true;sun.shadow.mapSize.set(4096,4096);
+Object.assign(sun.shadow.camera,{left:-210,right:210,top:210,bottom:-210,near:10,far:1200});sun.shadow.bias=-0.0004;sun.shadow.normalBias=0.7;sun.shadow.radius=3;scene.add(sun,sun.target);
+const pls=lamps.map(([x,y,z])=>{const p=new THREE.PointLight(0xFFC27A,0,90,1.6);p.position.set(x+.5-NX/2,y-.5,z+.5-NZ/2);scene.add(p);return p;});
+
+// дым из труб
+const SM=14,smoke=new THREE.InstancedMesh(new THREE.BoxGeometry(1,1,1),new THREE.MeshStandardMaterial({color:0xE6E2DC,transparent:true,opacity:0.5,roughness:1}),chimneys.length*SM);scene.add(smoke);
+// частицы сезона: листья, снег, лепестки, тополиный пух
+const LN=520,leaves=new THREE.InstancedMesh(new THREE.PlaneGeometry(1,1),new THREE.MeshStandardMaterial({side:THREE.DoubleSide,roughness:0.8}),LN);
+const lp=[];const col=new THREE.Color();
+for(let i=0;i<LN;i++){lp.push({x:(Math.random()-.5)*NX,y:G+Math.random()*55,z:(Math.random()-.5)*NZ,s:Math.random(),p:Math.random()*6.28,r:Math.random()*6.28});leaves.setColorAt(i,col.setHex(0xffffff));}
+scene.add(leaves);
+// облака
+const CL=[],cube=new THREE.BoxGeometry(1,1,1),cloudMat=new THREE.MeshStandardMaterial({color:0xffffff,roughness:1,transparent:true,opacity:0.93});
+for(let i=0;i<6;i++){const g=new THREE.Group(),n=5+Math.floor(Math.random()*4);for(let k=0;k<n;k++){const m=new THREE.Mesh(cube,cloudMat);m.scale.set(6+Math.random()*9,3+Math.random()*3,5+Math.random()*6);m.position.set((k-n/2)*4.5+Math.random()*3,Math.random()*2.5,Math.random()*6-3);m.castShadow=true;g.add(m);}
+  g.userData={a:i/6*6.283+Math.random()*0.6,r:215+Math.random()*60,v:0.012+Math.random()*0.012};g.position.y=28+Math.random()*45;scene.add(g);CL.push(g);}
+// машина, которая ездит по проезду
+const carG=new THREE.Group();{const mk=(w,h,d,c,x,y,z,basic)=>{const m=new THREE.Mesh(cube,basic?new THREE.MeshBasicMaterial({color:c}):new THREE.MeshStandardMaterial({color:c,roughness:0.6}));m.scale.set(w,h,d);m.position.set(x,y,z);m.castShadow=!basic;carG.add(m);};
+  mk(4,1.6,9,0xD9A21B,0,1.3,0);mk(3.6,1.4,5,0x263340,0,2.8,0.3);mk(3.8,0.25,5.2,0xD9A21B,0,3.6,0.3);for(const a of[-1.7,1.7])for(const b of[-2.8,2.8])mk(0.8,1.2,1.6,0x1C1C1E,a,0.6,b);
+  for(const a of[-1.2,1.2]){mk(0.9,0.5,0.2,0xFFF2B0,a,1.5,-4.55,true);mk(0.9,0.4,0.2,0xD02020,a,1.5,4.55,true);}}
+const carBeam=new THREE.SpotLight(0xFFE9B0,0,70,0.5,0.6,1.4);carBeam.position.set(0,2,-4);carBeam.target.position.set(0,0,-30);carG.add(carBeam,carBeam.target);scene.add(carG);
+// птицы
+const BN=9,birds=new THREE.InstancedMesh(new THREE.PlaneGeometry(2.4,0.8),new THREE.MeshBasicMaterial({color:0x1b1b20,side:THREE.DoubleSide}),BN);scene.add(birds);
+
+// день / вечер
+const $=id=>document.getElementById(id);
+let eve=0,eveT=0;const cA=new THREE.Color(),cB=new THREE.Color(),L=(a,b,t)=>a+(b-a)*t;
+function applyTime(t){const s=SE.sun,h=SE.hemi;sun.position.set(L(s[2],-330,t),L(s[3],95,t),L(s[4],150,t));sun.color.copy(cA.setHex(s[0])).lerp(cB.setHex(0xFF9A62),t);sun.intensity=L(s[1],1.7,t);
+  hemi.color.copy(cA.setHex(h[0])).lerp(cB.setHex(0x7C8CD0),t);hemi.groundColor.copy(cA.setHex(h[1])).lerp(cB.setHex(0x4A4050),t);hemi.intensity=L(h[2],1.0,t);
+  scene.background.copy(cA.setHex(0x17171c)).lerp(cB.setHex(0x0d0e16),t);litMat.color.copy(cA.setHex(0x6F8AA8)).lerp(cB.setHex(0xFFFFFF),t).multiplyScalar(L(1,1.6,t));
+  for(const p of pls)p.intensity=320*t;carBeam.intensity=1500*t;}
+function applySeason(regen=true){if(regen)generate();const m=meshAll();main.geometry.dispose();lit.geometry.dispose();main.geometry=geo(m.bufs[1]);lit.geometry=geo(m.bufs[2]);
+  const P=SE.part;for(let i=0;i<LN;i++)leaves.setColorAt(i,col.setHex(P.cols[i%P.cols.length]));leaves.instanceColor.needsUpdate=true;cloudMat.color.setHex(SE.cloud);applyTime(eveT);
+  $('bLeaf').textContent=P.label;$('ttl').textContent='Тополево · Зелёная, 25 · '+SE.name;document.querySelectorAll('[data-s]').forEach(b=>b.classList.toggle('on',b.dataset.s===SE.id));
+  $('stat').textContent=`${m.nvox.toLocaleString('ru')} вокселей · ${((m.bufs[1].i.length+m.bufs[2].i.length)/3).toLocaleString('ru')} треугольников · 1 воксель = 0,5 м`;}
+if(HP.has('eve')){eve=eveT=1;}
+
+$('bEve').onclick=e=>{eve=eve?0:1;e.target.classList.toggle('on',!!eve);e.target.textContent=eve?'День':'Вечер';};
+$('bRot').onclick=e=>{controls.autoRotate=!controls.autoRotate;e.target.classList.toggle('on',controls.autoRotate);};
+$('bLeaf').onclick=e=>{leaves.visible=!leaves.visible;e.target.classList.toggle('on',leaves.visible);};
+if(eve){$('bEve').classList.add('on');$('bEve').textContent='День';}
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+document.querySelectorAll('[data-s]').forEach(b=>b.onclick=()=>{if(b.dataset.s===SE.id)return;$('stat').textContent='перестраиваю сцену…';setTimeout(()=>{SE=SEAS[b.dataset.s];applySeason();},40);});
+applySeason(false);
+window.__ready=true;
+
+const dm=new THREE.Object3D(),clock=new THREE.Clock();
+renderer.setAnimationLoop(()=>{const dt=Math.min(clock.getDelta(),0.05),tt=clock.elapsedTime,P=SE.part;
+  if(Math.abs(eveT-eve)>0.001){eveT+=(eve-eveT)*Math.min(1,dt*2.5);applyTime(eveT);}
+  let k=0;for(const [cx,cy,cz] of chimneys)for(let i=0;i<SM;i++){const a=((tt*0.12+i/SM)%1);dm.position.set(cx-NX/2+a*a*14+Math.sin(tt+i)*0.6,cy+a*26,cz-NZ/2+a*5);dm.rotation.set(0,i,0);dm.scale.setScalar(Math.max(0.001,(0.8+a*3.2)*(1-a*a)*SE.smoke));dm.updateMatrix();smoke.setMatrixAt(k++,dm.matrix);}
+  smoke.instanceMatrix.needsUpdate=true;
+  if(leaves.visible){for(let i=0;i<LN;i++){const l=lp[i];if(i>=P.n){dm.position.set(0,-500,0);dm.scale.setScalar(0.001);dm.updateMatrix();leaves.setMatrixAt(i,dm.matrix);continue;}
+      l.y-=(P.v[0]+(P.v[1]-P.v[0])*l.s)*dt;if(P.float)l.y+=Math.sin(tt*1.3+l.p*3)*dt*1.4;l.x+=(Math.sin(tt*0.9+l.p)*1.5+P.wind)*dt*P.drift;l.z+=Math.cos(tt*0.7+l.p)*dt*P.drift;
+      if(l.y<G||Math.abs(l.x)>NX/2+25||Math.abs(l.z)>NZ/2+25){l.y=G+(P.float?Math.random()*45:30+Math.random()*28);l.x=(Math.random()-.5)*NX;l.z=(Math.random()-.5)*NZ;}
+      dm.position.set(l.x,l.y,l.z);dm.rotation.set(tt*1.3+l.r,tt*0.8+l.p,l.r);dm.scale.setScalar(P.size);dm.updateMatrix();leaves.setMatrixAt(i,dm.matrix);}leaves.instanceMatrix.needsUpdate=true;}
+  for(const g of CL){const u=g.userData;u.a+=u.v*dt;g.position.x=Math.cos(u.a)*u.r;g.position.z=Math.sin(u.a)*u.r;g.rotation.y=-u.a+Math.PI/2;}
+  {const ph=(tt/30)%1,zS=112,zN=-36,e=x=>x*x*(3-2*x);let z,x,ry;                        // машина: туда, разворот, обратно
+    if(ph<0.44){z=L(zS,zN,ph/0.44);x=54.5;ry=0;}else if(ph<0.5){const q=e((ph-0.44)/0.06);z=zN;x=L(54.5,49.5,q);ry=Math.PI*q;}
+    else if(ph<0.94){z=L(zN,zS,(ph-0.5)/0.44);x=49.5;ry=Math.PI;}else{const q=e((ph-0.94)/0.06);z=zS;x=L(49.5,54.5,q);ry=Math.PI*(1+q);}
+    carG.position.set(x,G,z);carG.rotation.y=ry;}
+  for(let i=0;i<BN;i++){const a=tt*0.22+i*0.42,Rr=74+(i%3)*9;dm.position.set(Math.cos(a)*Rr,78+i*1.6+Math.sin(tt*0.7+i)*4,Math.sin(a)*Rr+10);dm.rotation.set(Math.PI/2,-a,0,'YXZ');dm.scale.set(0.45+0.55*Math.abs(Math.sin(tt*7+i)),1,1);dm.updateMatrix();birds.setMatrixAt(i,dm.matrix);}
+  birds.instanceMatrix.needsUpdate=true;dm.rotation.order='XYZ';dm.scale.set(1,1,1);
+  controls.update();renderer.render(scene,camera);});
+</script>
+</body>
+</html>
